@@ -162,6 +162,97 @@ private:
     bool initialized_ = false;
 };
 
+// Excel's COM server frequently returns RPC_E_CALL_REJECTED / RPC_E_SERVERCALL_RETRYLATER
+// while it is busy (initialization, add-in loads, printer driver round-trips, modal
+// prompts elsewhere on the desktop). Registering an IMessageFilter on the STA tells
+// the COM runtime to wait briefly and retry instead of failing the call.
+class RetryMessageFilter : public IMessageFilter {
+public:
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppv) override {
+        if (!ppv) {
+            return E_POINTER;
+        }
+        if (riid == IID_IUnknown || riid == IID_IMessageFilter) {
+            *ppv = static_cast<IMessageFilter *>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppv = nullptr;
+        return E_NOINTERFACE;
+    }
+
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return static_cast<ULONG>(InterlockedIncrement(&refCount_));
+    }
+
+    ULONG STDMETHODCALLTYPE Release() override {
+        LONG count = InterlockedDecrement(&refCount_);
+        return static_cast<ULONG>(count);
+    }
+
+    DWORD STDMETHODCALLTYPE HandleInComingCall(DWORD, HTASK, DWORD, LPINTERFACEINFO) override {
+        return SERVERCALL_ISHANDLED;
+    }
+
+    DWORD STDMETHODCALLTYPE RetryRejectedCall(HTASK, DWORD dwTickCount, DWORD dwRejectType) override {
+        if (dwRejectType != SERVERCALL_RETRYLATER && dwRejectType != SERVERCALL_REJECTED) {
+            return static_cast<DWORD>(-1);
+        }
+        // Give Excel up to ~30 seconds of cumulative retry time, polling every 250 ms.
+        if (dwTickCount >= 30000) {
+            return static_cast<DWORD>(-1);
+        }
+        return 250;
+    }
+
+    DWORD STDMETHODCALLTYPE MessagePending(HTASK, DWORD, DWORD) override {
+        return PENDINGMSG_WAITDEFPROCESS;
+    }
+
+private:
+    LONG refCount_ = 1;
+};
+
+class MessageFilterScope {
+public:
+    MessageFilterScope() {
+        filter_ = new RetryMessageFilter();
+        IMessageFilter *previous = nullptr;
+        HRESULT hr = ::CoRegisterMessageFilter(filter_, &previous);
+        if (FAILED(hr)) {
+            filter_->Release();
+            filter_ = nullptr;
+            _com_issue_error(hr);
+        }
+        previous_ = previous;
+        registered_ = true;
+    }
+
+    MessageFilterScope(const MessageFilterScope &) = delete;
+    MessageFilterScope &operator=(const MessageFilterScope &) = delete;
+
+    ~MessageFilterScope() {
+        if (registered_) {
+            IMessageFilter *current = nullptr;
+            ::CoRegisterMessageFilter(previous_, &current);
+            if (current) {
+                current->Release();
+            }
+        }
+        if (filter_) {
+            filter_->Release();
+        }
+        if (previous_) {
+            previous_->Release();
+        }
+    }
+
+private:
+    RetryMessageFilter *filter_ = nullptr;
+    IMessageFilter *previous_ = nullptr;
+    bool registered_ = false;
+};
+
 using DispatchPtr = IDispatchPtr;
 
 DispatchPtr RequireDispatchPtr(_variant_t &variant, const char *context) {
@@ -333,22 +424,47 @@ void EnsureProcessTermination(DWORD processId, UniqueHandle &processHandle) {
 } // namespace
 
 int wmain(int argc, wchar_t *argv[]) {
-    if (argc >= 2) {
-        std::wstring_view option(argv[1]);
-        if (option == L"-h" || option == L"--help" || option == L"/?") {
-            std::wcout << L"Usage: xlsx2pdf <input-path> [worksheet-name]\n"
-                       << L"Converts the specified Excel worksheet to PDF and saves it to %TMP%\\xlsx.pdf.\n"
-                       << L"Provide an optional worksheet name to export a specific sheet; defaults to the first sheet.\n";
+    auto printUsage = [](std::wostream &stream) {
+        stream << L"Usage: xlsx2pdf [options] <input-path> [worksheet-name]\n"
+               << L"  --landscape, -l    Export the page in landscape orientation.\n"
+               << L"  --portrait,  -p    Export the page in portrait orientation (default).\n"
+               << L"  --fit-to-page, -f  Scale the worksheet to fit on a single page.\n"
+               << L"  -h, --help         Show this help and exit.\n"
+               << L"Converts the specified Excel worksheet to PDF and saves it to %TMP%\\xlsx.pdf.\n"
+               << L"Provide an optional worksheet name to export a specific sheet; defaults to the first sheet.\n";
+    };
+
+    std::vector<std::wstring_view> positional;
+    bool landscape = false;
+    bool fitToPage = false;
+
+    for (int i = 1; i < argc; ++i) {
+        std::wstring_view arg(argv[i]);
+        if (arg == L"-h" || arg == L"--help" || arg == L"/?") {
+            printUsage(std::wcout);
             return 0;
+        }
+        if (arg == L"--landscape" || arg == L"-l") {
+            landscape = true;
+        } else if (arg == L"--portrait" || arg == L"-p") {
+            landscape = false;
+        } else if (arg == L"--fit-to-page" || arg == L"-f") {
+            fitToPage = true;
+        } else if (!arg.empty() && arg.front() == L'-') {
+            std::wcerr << L"Unknown option: " << arg << L"\n";
+            printUsage(std::wcerr);
+            return 1;
+        } else {
+            positional.push_back(arg);
         }
     }
 
-    if (argc < 2 || argc > 3) {
-        std::wcerr << L"Usage: xlsx2pdf <input-path> [worksheet-name]\n";
+    if (positional.empty() || positional.size() > 2) {
+        printUsage(std::wcerr);
         return 1;
     }
 
-    std::filesystem::path inputPath(argv[1]);
+    std::filesystem::path inputPath(positional[0]);
     std::error_code ec;
     inputPath = std::filesystem::absolute(inputPath, ec);
     if (ec) {
@@ -367,8 +483,8 @@ int wmain(int argc, wchar_t *argv[]) {
     }
 
     std::wstring worksheetName;
-    if (argc == 3) {
-        worksheetName = argv[2];
+    if (positional.size() == 2) {
+        worksheetName = std::wstring(positional[1]);
     }
 
     std::wstring tmpDirectory = GetEnvironmentValue(L"TMP");
@@ -381,6 +497,7 @@ int wmain(int argc, wchar_t *argv[]) {
 
     try {
         ComInitializer com;
+        MessageFilterScope messageFilter;
 
         CLSID clsid;
         HRESULT hr = ::CLSIDFromProgID(L"Excel.Application", &clsid);
@@ -488,6 +605,23 @@ int wmain(int argc, wchar_t *argv[]) {
 
             if (!worksheet) {
                 throw std::runtime_error("Worksheet dispatch is not available.");
+            }
+
+            if (landscape || fitToPage) {
+                _variant_t pageSetupVariant = Invoke(worksheet.GetInterfacePtr(), DISPATCH_PROPERTYGET, L"PageSetup");
+                DispatchPtr pageSetup = RequireDispatchPtr(pageSetupVariant, "Worksheet.PageSetup");
+
+                if (landscape) {
+                    // xlLandscape = 2, xlPortrait = 1
+                    Invoke(pageSetup.GetInterfacePtr(), DISPATCH_PROPERTYPUT, L"Orientation", { _variant_t(2L) });
+                }
+
+                if (fitToPage) {
+                    // Zoom must be disabled before FitToPagesWide/Tall take effect.
+                    Invoke(pageSetup.GetInterfacePtr(), DISPATCH_PROPERTYPUT, L"Zoom", { _variant_t(VARIANT_FALSE, VT_BOOL) });
+                    Invoke(pageSetup.GetInterfacePtr(), DISPATCH_PROPERTYPUT, L"FitToPagesWide", { _variant_t(1L) });
+                    Invoke(pageSetup.GetInterfacePtr(), DISPATCH_PROPERTYPUT, L"FitToPagesTall", { _variant_t(1L) });
+                }
             }
 
             Invoke(worksheet.GetInterfacePtr(), DISPATCH_METHOD, L"ExportAsFixedFormat", {

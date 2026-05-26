@@ -1,6 +1,8 @@
 param (
     [string]$InputPath,      # Full path to the input Excel file
-    [string]$WorksheetName   # Name of the worksheet to export (optional)
+    [string]$WorksheetName,  # Name of the worksheet to export (optional)
+    [switch]$Landscape,      # Export in landscape orientation (default: portrait)
+    [switch]$FitToPage       # Scale the worksheet to fit on a single page
 )
 
 $ExitCode = 0
@@ -40,7 +42,19 @@ try {
         # Default to the first worksheet if no name is provided
         $Worksheet = $Workbook.Sheets.Item(1)
     }
-    
+
+    if ($Landscape) {
+        # xlLandscape = 2, xlPortrait = 1
+        $Worksheet.PageSetup.Orientation = 2
+    }
+
+    if ($FitToPage) {
+        # Zoom must be disabled before FitToPagesWide/Tall take effect.
+        $Worksheet.PageSetup.Zoom = $false
+        $Worksheet.PageSetup.FitToPagesWide = 1
+        $Worksheet.PageSetup.FitToPagesTall = 1
+    }
+
     # Export the worksheet to PDF
     # Params:
     # 1. Type
