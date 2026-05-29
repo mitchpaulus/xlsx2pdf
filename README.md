@@ -52,6 +52,9 @@ Options:
 - `--skip-exists`, `-s` — skip the conversion when the target PDF already
   exists. In `batch` mode this skips per row, making an interrupted run cheap to
   resume (Excel is not even launched if every row is skipped).
+- `--ignore-print-area`, `-i` — clear the worksheet's saved print area
+  (`PageSetup.PrintArea`) before exporting, so the full used range is rendered.
+  Use this when a sheet has a `Print_Area` that clips rows out of the PDF.
 - `--output`, `-o <path>` — write the PDF to `<path>` instead of the default
   location. Relative paths are resolved against the current directory, and the
   target directory must already exist.

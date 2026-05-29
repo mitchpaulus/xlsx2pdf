@@ -479,6 +479,7 @@ void ExportWorksheet(IDispatch *excel,
                      const std::wstring &worksheetName,
                      bool landscape,
                      bool fitToPage,
+                     bool ignorePrintArea,
                      const std::filesystem::path &outputPath) {
     DispatchPtr workbooks;
     DispatchPtr workbook;
@@ -550,9 +551,15 @@ void ExportWorksheet(IDispatch *excel,
             throw std::runtime_error("Worksheet dispatch is not available.");
         }
 
-        if (landscape || fitToPage) {
+        if (landscape || fitToPage || ignorePrintArea) {
             _variant_t pageSetupVariant = Invoke(worksheet.GetInterfacePtr(), DISPATCH_PROPERTYGET, L"PageSetup");
             DispatchPtr pageSetup = RequireDispatchPtr(pageSetupVariant, "Worksheet.PageSetup");
+
+            if (ignorePrintArea) {
+                // Clearing PrintArea makes Excel export the full used range
+                // instead of a sheet's saved Print_Area named range.
+                Invoke(pageSetup.GetInterfacePtr(), DISPATCH_PROPERTYPUT, L"PrintArea", { _variant_t(L"") });
+            }
 
             if (landscape) {
                 // xlLandscape = 2, xlPortrait = 1
@@ -674,7 +681,7 @@ private:
 // single shared Excel instance. Each row is "<input>\t<output>[\t<worksheet>]".
 // Per-row failures are reported but do not stop the batch; the return value is
 // non-zero if any row failed.
-int RunBatch(bool landscape, bool fitToPage, bool skipExists) {
+int RunBatch(bool landscape, bool fitToPage, bool skipExists, bool ignorePrintArea) {
     try {
         ComInitializer com;
         MessageFilterScope messageFilter;
@@ -767,7 +774,7 @@ int RunBatch(bool landscape, bool fitToPage, bool skipExists) {
             std::wcerr << prefix << L"Converting " << inputPath.native() << L" -> " << outputPath.native() << L"\n";
 
             try {
-                ExportWorksheet(excel->Get(), inputPath, worksheetName, landscape, fitToPage, outputPath);
+                ExportWorksheet(excel->Get(), inputPath, worksheetName, landscape, fitToPage, ignorePrintArea, outputPath);
                 std::wcerr << prefix << L"OK\n";
                 ++succeeded;
             } catch (const _com_error &e) {
@@ -803,6 +810,7 @@ int wmain(int argc, wchar_t *argv[]) {
                << L"  --portrait,  -p       Export the page in portrait orientation (default).\n"
                << L"  --fit-to-page, -f     Scale the worksheet to fit on a single page.\n"
                << L"  --skip-exists, -s     Skip conversion when the output PDF already exists.\n"
+               << L"  --ignore-print-area, -i  Export the full used range, ignoring a saved print area.\n"
                << L"  --output, -o <path>   Write the PDF to <path> (default: %TMP%\\xlsx.pdf).\n"
                << L"                        Not valid with the batch subcommand.\n"
                << L"  -h, --help            Show this help and exit.\n"
@@ -827,6 +835,7 @@ int wmain(int argc, wchar_t *argv[]) {
     bool landscape = false;
     bool fitToPage = false;
     bool skipExists = false;
+    bool ignorePrintArea = false;
     std::wstring_view outputArg;
 
     for (int i = argStart; i < argc; ++i) {
@@ -843,6 +852,8 @@ int wmain(int argc, wchar_t *argv[]) {
             fitToPage = true;
         } else if (arg == L"--skip-exists" || arg == L"-s") {
             skipExists = true;
+        } else if (arg == L"--ignore-print-area" || arg == L"-i") {
+            ignorePrintArea = true;
         } else if (arg == L"--output" || arg == L"-o") {
             if (i + 1 >= argc) {
                 std::wcerr << L"Option " << arg << L" requires a path argument.\n";
@@ -870,7 +881,7 @@ int wmain(int argc, wchar_t *argv[]) {
             printUsage(std::wcerr);
             return 1;
         }
-        return RunBatch(landscape, fitToPage, skipExists);
+        return RunBatch(landscape, fitToPage, skipExists, ignorePrintArea);
     }
 
     if (positional.empty() || positional.size() > 2) {
@@ -916,7 +927,7 @@ int wmain(int argc, wchar_t *argv[]) {
         ExcelInstance excel;
 
         std::wcerr << L"Exporting " << inputPath.native() << L"\n";
-        ExportWorksheet(excel.Get(), inputPath, worksheetName, landscape, fitToPage, outputPath);
+        ExportWorksheet(excel.Get(), inputPath, worksheetName, landscape, fitToPage, ignorePrintArea, outputPath);
         std::wcerr << L"PDF export successful: " << outputPath.native() << L"\n";
 
         return 0;
