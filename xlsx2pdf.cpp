@@ -426,17 +426,19 @@ void EnsureProcessTermination(DWORD processId, UniqueHandle &processHandle) {
 int wmain(int argc, wchar_t *argv[]) {
     auto printUsage = [](std::wostream &stream) {
         stream << L"Usage: xlsx2pdf [options] <input-path> [worksheet-name]\n"
-               << L"  --landscape, -l    Export the page in landscape orientation.\n"
-               << L"  --portrait,  -p    Export the page in portrait orientation (default).\n"
-               << L"  --fit-to-page, -f  Scale the worksheet to fit on a single page.\n"
-               << L"  -h, --help         Show this help and exit.\n"
-               << L"Converts the specified Excel worksheet to PDF and saves it to %TMP%\\xlsx.pdf.\n"
+               << L"  --landscape, -l       Export the page in landscape orientation.\n"
+               << L"  --portrait,  -p       Export the page in portrait orientation (default).\n"
+               << L"  --fit-to-page, -f     Scale the worksheet to fit on a single page.\n"
+               << L"  --output, -o <path>   Write the PDF to <path> (default: %TMP%\\xlsx.pdf).\n"
+               << L"  -h, --help            Show this help and exit.\n"
+               << L"Converts the specified Excel worksheet to PDF. Without --output the PDF is saved to %TMP%\\xlsx.pdf.\n"
                << L"Provide an optional worksheet name to export a specific sheet; defaults to the first sheet.\n";
     };
 
     std::vector<std::wstring_view> positional;
     bool landscape = false;
     bool fitToPage = false;
+    std::wstring_view outputArg;
 
     for (int i = 1; i < argc; ++i) {
         std::wstring_view arg(argv[i]);
@@ -450,6 +452,13 @@ int wmain(int argc, wchar_t *argv[]) {
             landscape = false;
         } else if (arg == L"--fit-to-page" || arg == L"-f") {
             fitToPage = true;
+        } else if (arg == L"--output" || arg == L"-o") {
+            if (i + 1 >= argc) {
+                std::wcerr << L"Option " << arg << L" requires a path argument.\n";
+                printUsage(std::wcerr);
+                return 1;
+            }
+            outputArg = std::wstring_view(argv[++i]);
         } else if (!arg.empty() && arg.front() == L'-') {
             std::wcerr << L"Unknown option: " << arg << L"\n";
             printUsage(std::wcerr);
@@ -487,13 +496,26 @@ int wmain(int argc, wchar_t *argv[]) {
         worksheetName = std::wstring(positional[1]);
     }
 
-    std::wstring tmpDirectory = GetEnvironmentValue(L"TMP");
-    if (tmpDirectory.empty()) {
-        std::cerr << "TMP environment variable is not set.\n";
-        return 1;
+    std::filesystem::path outputPath;
+    if (outputArg.empty()) {
+        std::wstring tmpDirectory = GetEnvironmentValue(L"TMP");
+        if (tmpDirectory.empty()) {
+            std::cerr << "TMP environment variable is not set.\n";
+            return 1;
+        }
+        outputPath = std::filesystem::path(tmpDirectory) / L"xlsx.pdf";
+    } else {
+        outputPath = std::filesystem::absolute(std::filesystem::path(outputArg), ec);
+        if (ec) {
+            std::cerr << "Failed to resolve output path.\n";
+            return 1;
+        }
+        std::filesystem::path outputDir = outputPath.parent_path();
+        if (!outputDir.empty() && !std::filesystem::exists(outputDir)) {
+            std::wcerr << L"Output directory does not exist: " << outputDir.native() << L"\n";
+            return 1;
+        }
     }
-
-    std::filesystem::path outputPath = std::filesystem::path(tmpDirectory) / L"xlsx.pdf";
 
     try {
         ComInitializer com;

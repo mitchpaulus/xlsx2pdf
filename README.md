@@ -48,9 +48,13 @@ Options:
 - `--portrait`, `-p` — export the page in portrait orientation (default).
 - `--fit-to-page`, `-f` — scale the worksheet to fit on a single page
   (sets `PageSetup.FitToPagesWide = 1` and `FitToPagesTall = 1`).
+- `--output`, `-o <path>` — write the PDF to `<path>` instead of the default
+  location. Relative paths are resolved against the current directory, and the
+  target directory must already exist.
 
-The PDF is written to `%TMP%\xlsx.pdf`. Status messages are written to stderr,
-so they can be separated from any stdout consumers in a pipeline.
+Without `--output`, the PDF is written to `%TMP%\xlsx.pdf`. Status messages are
+written to stderr, so they can be separated from any stdout consumers in a
+pipeline.
 
 ### Examples
 
@@ -72,27 +76,29 @@ Landscape, scaled to a single page:
 xlsx2pdf --landscape --fit-to-page C:\reports\january.xlsx "Summary"
 ```
 
+Write the PDF to a specific location:
+
+```
+xlsx2pdf --output C:\reports\pdfs\january.pdf C:\reports\january.xlsx "Summary"
+```
+
 ## Mass conversion
 
 `xlsx2pdf` itself processes a single workbook per invocation. To convert many
-files, wrap it in a shell loop and move the output between runs (since each
-run overwrites `%TMP%\xlsx.pdf`).
+files, wrap it in a shell loop and use `--output` to name each PDF directly.
 
 PowerShell:
 
 ```powershell
 Get-ChildItem -Path .\workbooks -Filter *.xlsx | ForEach-Object {
-    xlsx2pdf $_.FullName
-    Move-Item -Force "$env:TMP\xlsx.pdf" ".\pdfs\$($_.BaseName).pdf"
+    xlsx2pdf --output ".\pdfs\$($_.BaseName).pdf" $_.FullName
 }
 ```
 
 cmd.exe:
 
 ```
-for %F in (workbooks\*.xlsx) do (
-    xlsx2pdf "%F" && move /Y "%TMP%\xlsx.pdf" "pdfs\%~nF.pdf"
-)
+for %F in (workbooks\*.xlsx) do xlsx2pdf --output "pdfs\%~nF.pdf" "%F"
 ```
 
 ## PowerShell variant
@@ -106,8 +112,8 @@ for %F in (workbooks\*.xlsx) do (
 ## Notes and limitations
 
 - Excel must be installed and licensed on the machine running the tool.
-- The output path is fixed at `%TMP%\xlsx.pdf`; callers are responsible for
-  moving or renaming the file between conversions.
+- The output path defaults to `%TMP%\xlsx.pdf`; pass `--output` to write
+  elsewhere. The target directory must already exist.
 - The tool launches Excel headlessly (`Visible = false` in the C++ build) and
   suppresses dialogs (`DisplayAlerts = false`). If Excel hangs, the tool will
   wait briefly and then terminate the process it started.
