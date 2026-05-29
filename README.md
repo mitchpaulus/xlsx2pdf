@@ -35,6 +35,7 @@ The resulting executable is written under `bin\`.
 
 ```
 xlsx2pdf [options] <input-path> [worksheet-name]
+xlsx2pdf batch [options]
 ```
 
 - `input-path` — path to the `.xlsx` (or other Excel-readable) workbook.
@@ -48,6 +49,9 @@ Options:
 - `--portrait`, `-p` — export the page in portrait orientation (default).
 - `--fit-to-page`, `-f` — scale the worksheet to fit on a single page
   (sets `PageSetup.FitToPagesWide = 1` and `FitToPagesTall = 1`).
+- `--skip-exists`, `-s` — skip the conversion when the target PDF already
+  exists. In `batch` mode this skips per row, making an interrupted run cheap to
+  resume (Excel is not even launched if every row is skipped).
 - `--output`, `-o <path>` — write the PDF to `<path>` instead of the default
   location. Relative paths are resolved against the current directory, and the
   target directory must already exist.
@@ -82,24 +86,61 @@ Write the PDF to a specific location:
 xlsx2pdf --output C:\reports\pdfs\january.pdf C:\reports\january.xlsx "Summary"
 ```
 
-## Mass conversion
+## Mass conversion (`batch`)
 
-`xlsx2pdf` itself processes a single workbook per invocation. To convert many
-files, wrap it in a shell loop and use `--output` to name each PDF directly.
+The `batch` subcommand converts many workbooks in one invocation, reusing a
+**single** Excel instance for the whole run. This avoids paying Excel's startup
+and shutdown cost (several seconds each) per file, so it is dramatically faster
+than launching `xlsx2pdf` once per workbook.
 
-PowerShell:
+It reads tab-separated rows from **stdin**, one conversion per line:
+
+```
+<input-path>	<output-pdf>	[worksheet-name]
+```
+
+- Column 1 — path to the input workbook (required).
+- Column 2 — path to write the PDF (required). The target directory must exist.
+- Column 3 — worksheet name (optional; defaults to the first sheet).
+
+Blank lines are skipped. Input is read as UTF-8 (a leading byte-order mark is
+ignored). The page options (`--landscape`, `--fit-to-page`, …) apply to every
+row. Progress is reported to stderr with an `(i/N)` counter, where `N` is the
+number of non-blank rows; each row prints a `Converting …` line and then its
+result as `OK`, `SKIP`, or `FAIL`:
+
+```
+(1/3) Converting C:\reports\jan.xlsx -> C:\pdfs\jan.pdf
+(1/3) OK
+(2/3) SKIP	C:\pdfs\feb.pdf already exists
+(3/3) Converting C:\reports\mar.xlsx -> C:\pdfs\mar.pdf
+(3/3) OK
+Batch complete: 2 succeeded, 0 failed, 1 skipped, 3 total.
+```
+
+The process exits non-zero if any row failed — a failing row does not abort the
+rest. Pass `--skip-exists` to skip rows whose output PDF already exists, which
+makes a resumed run cheap.
+
+PowerShell — build the TSV and pipe it in:
 
 ```powershell
 Get-ChildItem -Path .\workbooks -Filter *.xlsx | ForEach-Object {
-    xlsx2pdf --output ".\pdfs\$($_.BaseName).pdf" $_.FullName
-}
+    "{0}`t{1}" -f $_.FullName, ".\pdfs\$($_.BaseName).pdf"
+} | xlsx2pdf batch
 ```
 
-cmd.exe:
+cmd.exe — from an existing list file:
 
 ```
-for %F in (workbooks\*.xlsx) do xlsx2pdf --output "pdfs\%~nF.pdf" "%F"
+type list.tsv | xlsx2pdf batch --fit-to-page
 ```
+
+### Single-instance vs. per-file
+
+You can still convert one file at a time (e.g. in a shell loop with
+`--output`), but each invocation launches and tears down its own Excel process.
+Prefer `batch` whenever you have more than a handful of files.
 
 ## PowerShell variant
 
